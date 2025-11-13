@@ -282,9 +282,24 @@ M.find.link = function()
     node = node:parent()
   end
 
-  -- Exit if we failed to find a link
+  -- If we fail to find a link, we try to find an obsidian link
   if node == nil or node:type() ~= "inline_link" then
-    return false
+    node = vim.treesitter.get_node({ ignore_injections = false })
+    if node == nil or node:type() ~= "text" then
+      return false
+    end
+
+    local text = vim.treesitter.get_node_text(node, pos[1])
+    if not text:match("^%[%[.*%]%]$") then
+      return false
+    end
+
+    local dest = text:match("^%[%[.*%]%]$")
+    if not dest then
+      return false
+    end
+
+    return dest
   end
 
   -- Find the link destination
