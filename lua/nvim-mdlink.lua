@@ -282,44 +282,62 @@ M.find.link = function()
     node = node:parent()
   end
 
-  -- If we fail to find a link, we try to find an obsidian link
-  if node == nil or node:type() ~= "inline_link" then
-    node = vim.treesitter.get_node({ ignore_injections = false })
-    if node == nil or node:type() ~= "text" then
-      return false
+  if node and node:type() == "inline_link" then
+    -- Find the link destination
+    local dest = nil
+    for child, _ in node:iter_children() do
+      if child:type() == "link_destination" then
+        dest = vim.treesitter.get_node_text(child, pos[1])
+        break
+      end
     end
 
-    local text = vim.treesitter.get_node_text(node, pos[1])
-    if not text:match("^%[%[.*%]%]$") then
-      return false
+    -- Exit if the destination was empty or not found
+    if dest == nil or dest:len() == 0 or dest == "#" then
+      return true
     end
 
-    local dest = text:match("^%[%[.*%]%]$")
-    if not dest then
-      return false
-    end
+    -- Remove the angle brackets from the destination if present
+    dest = dest:gsub("^<", ""):gsub(">$", "")
 
     return dest
   end
 
-  -- Find the link destination
-  local dest = nil
-  for child, _ in node:iter_children() do
-    if child:type() == "link_destination" then
-      dest = vim.treesitter.get_node_text(child, pos[1])
-      break
+  -- If no standard link, check for obsidian link [[link]]
+  local line = vim.fn.getline(pos[2])
+  local col = pos[3]
+
+  -- Use regex to find all [[...]] occurrences on the line
+  for s, _, e in line:gmatch("()(%[%[.-%]%])()") do
+    -- Check if cursor is inside this match
+    if col >= s and col < e then
+      local dest = line:sub(s + 2, e - 3)
+      if dest and dest:len() > 0 then
+        local file = dest
+        local header = nil
+
+        -- Split file and header
+        local header_idx = file:find("#")
+        if header_idx then
+          header = file:sub(header_idx) -- includes '#'
+          file = file:sub(1, header_idx - 1)
+        end
+
+        -- Add .md if it's not a link to a directory and doesn't have an extension
+        if not file:match("/$") and not file:match("%.%w+$") then
+          file = file .. ".md"
+        end
+
+        if header then
+          return file .. header
+        else
+          return file
+        end
+      end
     end
   end
 
-  -- Exit if the destination was empty or not found
-  if dest == nil or dest:len() == 0 or dest == "#" then
-    return true
-  end
-
-  -- Remove the angle brackets from the destination if present
-  dest = dest:gsub("^<", ""):gsub(">$", "")
-
-  return dest
+  return false
 end
 
 M.find.file = function(query)
