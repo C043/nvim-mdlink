@@ -304,14 +304,21 @@ M.find.link = function()
   end
 
   -- If no standard link, check for obsidian link [[link]]
-  local line = vim.fn.getline(pos[2])
-  local col = pos[3]
+  local cursor = vim.api.nvim_win_get_cursor(0)
+  local line = vim.api.nvim_get_current_line()
+  local col = cursor[2] + 1 -- win_get_cursor returns 0-based column
 
-  -- Use regex to find all [[...]] occurrences on the line
-  for s, _, e in line:gmatch("()(%[%[.-%]%])()") do
-    -- Check if cursor is inside this match
-    if col >= s and col < e then
-      local dest = line:sub(s + 2, e - 3)
+  local search_start = 1
+  while true do
+    -- Find the next obsidian-style link on the current line
+    local s, e = line:find("%[%[.-%]%]", search_start)
+    if not s then
+      break
+    end
+
+    -- Check if cursor is inside this match (inclusive of closing brackets)
+    if col >= s and col <= e then
+      local dest = line:sub(s + 2, e - 2)
       if dest and dest:len() > 0 then
         local file = dest
         local header = nil
@@ -335,6 +342,8 @@ M.find.link = function()
         end
       end
     end
+
+    search_start = e + 1
   end
 
   return false
