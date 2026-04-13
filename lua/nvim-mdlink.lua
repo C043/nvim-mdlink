@@ -102,6 +102,102 @@ local function select_text(mode)
   return line, lineno, vbegin, vend
 end
 
+local function parser_for_markdown(input)
+  local ok, parser
+  if type(input) == "number" then
+    ok, parser = pcall(vim.treesitter.get_parser, input, "markdown")
+  else
+    ok, parser = pcall(vim.treesitter.get_string_parser, input, "markdown")
+  end
+
+  if not ok then
+    return nil
+  end
+
+  return parser
+end
+
+local function markdown_link_under_cursor(line, col)
+  local search_start = 1
+  while true do
+    local label_start, label_end = line:find("%b[]", search_start)
+    if not label_start then
+      break
+    end
+
+    local dest_start = label_end + 1
+    if line:sub(dest_start, dest_start) == "(" then
+      local paren_open = dest_start
+      local paren_depth = 0
+      local paren_close = nil
+
+      for i = paren_open, #line do
+        local char = line:sub(i, i)
+        if char == "(" then
+          paren_depth = paren_depth + 1
+        elseif char == ")" then
+          paren_depth = paren_depth - 1
+          if paren_depth == 0 then
+            paren_close = i
+            break
+          end
+        end
+      end
+
+      if paren_close then
+        if col >= label_start and col <= paren_close then
+          local dest = line:sub(paren_open + 1, paren_close - 1)
+          if dest:len() == 0 or dest == "#" then
+            return true
+          end
+          return dest:gsub("^<", ""):gsub(">$", "")
+        end
+        search_start = paren_close + 1
+      else
+        search_start = label_end + 1
+      end
+    else
+      search_start = label_end + 1
+    end
+  end
+
+  search_start = 1
+  while true do
+    local s, e = line:find("%[%[.-%]%]", search_start)
+    if not s then
+      break
+    end
+
+    if col >= s and col <= e then
+      local dest = line:sub(s + 2, e - 2)
+      if dest and dest:len() > 0 then
+        local file = dest
+        local header = nil
+
+        local header_idx = file:find("#")
+        if header_idx then
+          header = file:sub(header_idx)
+          file = file:sub(1, header_idx - 1)
+        end
+
+        if not file:match("/$") and not file:match("%.%w+$") then
+          file = file .. ".md"
+        end
+
+        if header then
+          return file .. header
+        end
+        return file
+      end
+      return true
+    end
+
+    search_start = e + 1
+  end
+
+  return false
+end
+
 M.build_link = function(label, file, header)
   local link = ""
   if file and header then
@@ -135,7 +231,7 @@ M.stack_pop = function()
 
     -- Determine if the current buffer should be closed
     local bufnr = vim.fn.bufnr()
-    local modified = vim.api.nvim_buf_get_option(bufnr, "modified")
+    local modified = vim.api.nvim_get_option_value("modified", { buf = bufnr })
     local in_stack = vim.tbl_contains(STACK, vim.api.nvim_buf_get_name(bufnr))
 
     -- Close the current buffer if it is unmodifed and not still in the stack
@@ -152,7 +248,7 @@ M.stack_pop = function()
     end
 
     -- If the file was not found open it
-    vim.cmd("edit " .. STACK[#STACK])
+    vim.cmd("edit " .. vim.fn.fnameescape(STACK[#STACK]))
   end
 end
 
@@ -223,7 +319,7 @@ M.list.headers = function(input)
 
   local tsparser, source, key = nil, nil, nil
   if type(input) == "number" then
-    tsparser, source = vim.treesitter.get_parser(input), input
+    tsparser, source = parser_for_markdown(input), input
     key = vim.api.nvim_buf_get_name(input)
   else
     key = input
@@ -237,7 +333,11 @@ M.list.headers = function(input)
     end
     local contents = file:read("*a")
     file:close()
-    tsparser, source = vim.treesitter.get_string_parser(contents, "markdown"), contents
+    tsparser, source = parser_for_markdown(contents), contents
+  end
+
+  if tsparser == nil then
+    return {}
   end
 
   -- Parse the treesitter tree for the new buffer
@@ -272,81 +372,35 @@ end
 M.find = {}
 
 M.find.link = function()
-  -- Parse the treesitter tree
-  vim.treesitter.get_parser():parse()
+  local parser = parser_for_markdown(0)
+  if parser ~= nil then
+    parser:parse()
 
-  -- Find the inline link under the current cursor position
-  local pos = vim.fn.getcurpos()
-  local node = vim.treesitter.get_node({ ignore_injections = false })
-  while node ~= nil and node:type() ~= "inline_link" and node:type() ~= "inline" do
-    node = node:parent()
-  end
+    local pos = vim.fn.getcurpos()
+    local ok, node = pcall(vim.treesitter.get_node, { bufnr = 0, ignore_injections = false })
+    if ok then
+      while node ~= nil and node:type() ~= "inline_link" and node:type() ~= "inline" do
+        node = node:parent()
+      end
 
-  if node and node:type() == "inline_link" then
-    -- Find the link destination
-    local dest = nil
-    for child, _ in node:iter_children() do
-      if child:type() == "link_destination" then
-        dest = vim.treesitter.get_node_text(child, pos[1])
-        break
+      if node and node:type() == "inline_link" then
+        for child, _ in node:iter_children() do
+          if child:type() == "link_destination" then
+            local dest = vim.treesitter.get_node_text(child, pos[1])
+            if dest == nil or dest:len() == 0 or dest == "#" then
+              return true
+            end
+            return dest:gsub("^<", ""):gsub(">$", "")
+          end
+        end
       end
     end
-
-    -- Exit if the destination was empty or not found
-    if dest == nil or dest:len() == 0 or dest == "#" then
-      return true
-    end
-
-    -- Remove the angle brackets from the destination if present
-    dest = dest:gsub("^<", ""):gsub(">$", "")
-
-    return dest
   end
 
-  -- If no standard link, check for obsidian link [[link]]
   local cursor = vim.api.nvim_win_get_cursor(0)
   local line = vim.api.nvim_get_current_line()
   local col = cursor[2] + 1 -- win_get_cursor returns 0-based column
-
-  local search_start = 1
-  while true do
-    -- Find the next obsidian-style link on the current line
-    local s, e = line:find("%[%[.-%]%]", search_start)
-    if not s then
-      break
-    end
-
-    -- Check if cursor is inside this match (inclusive of closing brackets)
-    if col >= s and col <= e then
-      local dest = line:sub(s + 2, e - 2)
-      if dest and dest:len() > 0 then
-        local file = dest
-        local header = nil
-
-        -- Split file and header
-        local header_idx = file:find("#")
-        if header_idx then
-          header = file:sub(header_idx) -- includes '#'
-          file = file:sub(1, header_idx - 1)
-        end
-
-        -- Add .md if it's not a link to a directory and doesn't have an extension
-        if not file:match("/$") and not file:match("%.%w+$") then
-          file = file .. ".md"
-        end
-
-        if header then
-          return file .. header
-        else
-          return file
-        end
-      end
-    end
-
-    search_start = e + 1
-  end
-
-  return false
+  return markdown_link_under_cursor(line, col)
 end
 
 M.find.file = function(query)
@@ -397,7 +451,7 @@ M.open.file = function(file)
     vim.fn.mkdir(dir, "p")
   end
 
-  vim.cmd("edit " .. file)
+  vim.cmd("edit " .. vim.fn.fnameescape(file))
   return true
 end
 
@@ -583,19 +637,21 @@ local function set_default_keymap()
     "n",
     "<CR>",
     M.follow_or_create,
-    { buffer = bufnr, noremap = true, silent = true, desc = "Follow or create link" }
+    { buf = bufnr, noremap = true, silent = true, desc = "Follow or create link" }
   )
   vim.keymap.set(
     "v",
     "<CR>",
-    [[:lua require'.nvim-mdlink'.create('v')<CR>]],
-    { buffer = bufnr, noremap = true, silent = true, desc = "Create link" }
+    function()
+      require("nvim-mdlink").create("v")
+    end,
+    { buf = bufnr, noremap = true, silent = true, desc = "Create link" }
   )
   vim.keymap.set(
     "n",
     "<BS>",
     M.stack_pop,
-    { buffer = bufnr, noremap = true, silent = true, desc = "Goto previous file" }
+    { buf = bufnr, noremap = true, silent = true, desc = "Goto previous file" }
   )
 end
 
