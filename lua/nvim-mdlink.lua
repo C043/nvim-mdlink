@@ -655,6 +655,14 @@ local function set_default_keymap()
   )
 end
 
+local function apply_keymaps_to_markdown_buffers()
+  for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
+    if vim.api.nvim_buf_is_loaded(bufnr) and vim.bo[bufnr].filetype == "markdown" then
+      vim.api.nvim_buf_call(bufnr, set_default_keymap)
+    end
+  end
+end
+
 M.setup = function(args)
   M.config = vim.tbl_deep_extend("force", M.config, args or {})
 
@@ -664,6 +672,7 @@ M.setup = function(args)
       "FileType",
       { group = "MDLinkKeymap", pattern = { "markdown" }, callback = set_default_keymap }
     )
+    apply_keymaps_to_markdown_buffers()
   end
 
   if M.config.cmp == true then
